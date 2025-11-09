@@ -160,6 +160,43 @@ All commands available:
 ./run-local.sh clean      # Clean logs and PIDs
 ```
 
+#### TUI Manager (Interactive Terminal UI)
+
+For a more interactive experience, use the TUI (Terminal User Interface) manager:
+
+```bash
+# Run the TUI manager
+./target/release/tui-runner
+
+# Or with cargo
+cargo run --release --bin tui-runner
+```
+
+The TUI provides:
+- **Real-time Dashboard**: Live service status, PIDs, and recent logs
+- **Interactive Controls**: Start/stop services with single keypress
+- **Integrated Log Viewer**: Scroll through logs with auto-scroll support
+- **Test Execution**: Run test scenarios interactively
+- **Build Integration**: Build the project from within the TUI
+
+**Key Features**:
+- Tab-based interface (Dashboard, Logs, Tests, Help)
+- Color-coded service status indicators
+- Keyboard shortcuts for all operations
+- Built-in help screen with all commands
+
+**Quick Keys**:
+- `s` - Start all services
+- `x` - Stop all services
+- `r` - Restart all services
+- `1-4` - Toggle individual services
+- `Tab` - Switch views
+- `Ctrl+B` - Build project
+- `h` - Show help
+- `q` - Quit
+
+See **[TUI-README.md](TUI-README.md)** for detailed TUI documentation.
+
 #### Manual Run
 
 You can also run components manually:
