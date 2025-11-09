@@ -13,9 +13,11 @@ RUN apt-get update && apt-get install -y \
 # Copy dependency files first for better caching
 COPY Cargo.toml Cargo.lock ./
 
-# Create dummy main.rs to cache dependencies
-RUN mkdir -p src && \
+# Create dummy source files for all binaries to cache dependencies
+RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/main.rs && \
+    echo "fn main() {}" > src/bin/test-upf.rs && \
+    echo "fn main() {}" > src/bin/test-smf.rs && \
     cargo build --release && \
     rm -rf src
 
