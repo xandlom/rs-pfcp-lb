@@ -11,8 +11,9 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap},
     Frame, Terminal,
 };
+use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{self, BufRead, BufReader},
     path::PathBuf,
@@ -26,6 +27,33 @@ const UPF1_ADDR: &str = "127.0.0.1:8806";
 const UPF2_ADDR: &str = "127.0.0.1:8807";
 const UPF3_ADDR: &str = "127.0.0.1:8808";
 const MAX_LOG_LINES: usize = 1000;
+const STATS_FILE_PATH: &str = "/tmp/pfcp-proxy-stats.json";
+
+// Proxy statistics structures (mirroring the ones in statistics.rs)
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct ProxyStats {
+    pub timestamp: String,
+    pub total_messages_received: u64,
+    pub total_messages_sent: u64,
+    pub total_responses_forwarded: u64,
+    pub responses_dropped: u64,
+    pub active_sessions: usize,
+    pub sessions_established: u64,
+    pub sessions_deleted: u64,
+    pub routed_by_seid: u64,
+    pub routed_by_load_balance: u64,
+    pub broadcasts: u64,
+    pub message_types: HashMap<String, u64>,
+    pub upf_stats: Vec<UpfStats>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct UpfStats {
+    pub address: String,
+    pub messages_sent: u64,
+    pub active_sessions: usize,
+    pub health: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -82,12 +110,13 @@ enum Tab {
     Dashboard,
     Logs,
     Tests,
+    UPFs,
     Help,
 }
 
 impl Tab {
     fn all() -> Vec<Tab> {
-        vec![Tab::Dashboard, Tab::Logs, Tab::Tests, Tab::Help]
+        vec![Tab::Dashboard, Tab::Logs, Tab::Tests, Tab::UPFs, Tab::Help]
     }
 
     fn title(&self) -> &'static str {
@@ -95,6 +124,7 @@ impl Tab {
             Tab::Dashboard => "Dashboard",
             Tab::Logs => "Logs",
             Tab::Tests => "Tests",
+            Tab::UPFs => "UPF Management",
             Tab::Help => "Help",
         }
     }
@@ -112,6 +142,12 @@ struct App {
     should_quit: bool,
     selected_test: usize,
     auto_scroll_logs: bool,
+    proxy_stats: Option<ProxyStats>,
+    // UPF Management
+    upf_input: String,
+    upf_input_mode: bool,
+    upf_list: Vec<String>,
+    selected_upf: usize,
 }
 
 impl App {
@@ -162,7 +198,61 @@ impl App {
             should_quit: false,
             selected_test: 0,
             auto_scroll_logs: true,
+            proxy_stats: None,
+            upf_input: String::new(),
+            upf_input_mode: false,
+            upf_list: vec![
+                UPF1_ADDR.to_string(),
+                UPF2_ADDR.to_string(),
+                UPF3_ADDR.to_string(),
+            ],
+            selected_upf: 0,
         })
+    }
+
+    /// Load proxy statistics from JSON file
+    fn load_proxy_stats(&mut self) {
+        if let Ok(data) = fs::read_to_string(STATS_FILE_PATH) {
+            if let Ok(stats) = serde_json::from_str::<ProxyStats>(&data) {
+                self.proxy_stats = Some(stats);
+            }
+        }
+    }
+
+    /// Synchronize services list with UPF list
+    fn sync_services_with_upf_list(&mut self) {
+        // Keep the proxy service
+        let proxy_service = ServiceInfo {
+            name: "pfcp-proxy".to_string(),
+            status: self.services.first()
+                .map(|s| s.status)
+                .unwrap_or(ServiceStatus::Stopped),
+            pid: self.services.first()
+                .and_then(|s| s.pid),
+            addr: PROXY_ADDR.to_string(),
+        };
+
+        // Create UPF services from upf_list
+        let mut new_services = vec![proxy_service];
+
+        for (idx, upf_addr) in self.upf_list.iter().enumerate() {
+            let service_name = format!("upf{}", idx + 1);
+
+            // Try to preserve existing service status if it exists
+            let existing_service = self.services.iter()
+                .find(|s| s.addr == *upf_addr);
+
+            new_services.push(ServiceInfo {
+                name: service_name,
+                status: existing_service
+                    .map(|s| s.status)
+                    .unwrap_or(ServiceStatus::Stopped),
+                pid: existing_service.and_then(|s| s.pid),
+                addr: upf_addr.clone(),
+            });
+        }
+
+        self.services = new_services;
     }
 
     fn update_service_status(&mut self) {
@@ -457,6 +547,25 @@ impl App {
         None
     }
 
+    /// Send UPF add/remove command to the proxy via a control file
+    fn send_upf_command(&self, action: &str, addr: &str) -> io::Result<()> {
+        // Write command to a control file that the proxy can read
+        let control_file = self.build_dir.parent().unwrap().join(".upf_control");
+        let command = format!("{}:{}\n", action, addr);
+
+        // Append to control file
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&control_file)?;
+
+        file.write_all(command.as_bytes())?;
+        file.flush()?;
+
+        Ok(())
+    }
+
     fn scroll_logs_up(&mut self) {
         self.auto_scroll_logs = false;
         self.log_scroll = self.log_scroll.saturating_sub(1);
@@ -554,6 +663,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         Tab::Dashboard => render_dashboard(f, app, chunks[1]),
         Tab::Logs => render_logs(f, app, chunks[1]),
         Tab::Tests => render_tests(f, app, chunks[1]),
+        Tab::UPFs => render_upfs(f, app, chunks[1]),
         Tab::Help => render_help(f, app, chunks[1]),
     }
 
@@ -565,8 +675,8 @@ fn render_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10), // Services
-            Constraint::Min(0),     // Recent logs
+            Constraint::Length(8),  // Services
+            Constraint::Min(0),     // Stats area
         ])
         .split(area);
 
@@ -608,15 +718,195 @@ fn render_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(services, chunks[0]);
 
-    // Recent logs
-    let log_lines: Vec<ListItem> = app.logs.iter().rev().take(20).rev().map(|line| {
-        ListItem::new(Line::from(line.clone()))
-    }).collect();
+    // Stats area - split into left (proxy stats) and right (UPF stats)
+    let stats_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),  // Proxy stats
+            Constraint::Percentage(50),  // UPF stats
+        ])
+        .split(chunks[1]);
 
-    let logs = List::new(log_lines)
-        .block(Block::default().borders(Borders::ALL).title("Recent Logs"));
+    // Render proxy statistics
+    render_proxy_stats(f, app, stats_chunks[0]);
 
-    f.render_widget(logs, chunks[1]);
+    // Render UPF distribution
+    render_upf_stats(f, app, stats_chunks[1]);
+}
+
+fn render_proxy_stats(f: &mut Frame, app: &App, area: Rect) {
+    let stats_text = if let Some(ref stats) = app.proxy_stats {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("Last Updated: ", Style::default().fg(Color::Gray)),
+                Span::styled(&stats.timestamp[11..19], Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("GLOBAL METRICS", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Messages Received:   "),
+                Span::styled(format!("{}", stats.total_messages_received), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Messages Sent:       "),
+                Span::styled(format!("{}", stats.total_messages_sent), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Responses Forwarded: "),
+                Span::styled(format!("{}", stats.total_responses_forwarded), Style::default().fg(Color::Cyan)),
+            ]),
+        ];
+
+        if stats.responses_dropped > 0 {
+            lines.push(Line::from(vec![
+                Span::raw("  Responses Dropped:   "),
+                Span::styled(format!("{}", stats.responses_dropped), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            ]));
+        }
+
+        lines.extend(vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("SESSIONS", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Active Sessions:     "),
+                Span::styled(format!("{}", stats.active_sessions), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Established:         "),
+                Span::styled(format!("{}", stats.sessions_established), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Deleted:             "),
+                Span::styled(format!("{}", stats.sessions_deleted), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("ROUTING DECISIONS", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Routed by SEID:      "),
+                Span::styled(format!("{}", stats.routed_by_seid), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Load Balanced:       "),
+                Span::styled(format!("{}", stats.routed_by_load_balance), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Broadcasts:          "),
+                Span::styled(format!("{}", stats.broadcasts), Style::default().fg(Color::Cyan)),
+            ]),
+        ]);
+
+        // Add top message types if available
+        if !stats.message_types.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("TOP MESSAGE TYPES", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+
+            let mut msg_types: Vec<_> = stats.message_types.iter().collect();
+            msg_types.sort_by(|a, b| b.1.cmp(a.1));
+
+            for (msg_type, count) in msg_types.iter().take(5) {
+                let short_name = msg_type.replace("Request", "Req").replace("Response", "Rsp");
+                lines.push(Line::from(vec![
+                    Span::raw(format!("  {:<25}", if short_name.len() > 25 { &short_name[..25] } else { &short_name })),
+                    Span::styled(format!("{:>6}", count), Style::default().fg(Color::Cyan)),
+                ]));
+            }
+        }
+
+        lines
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("No proxy statistics available", Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Start the proxy service to see realtime stats", Style::default().fg(Color::Gray)),
+            ]),
+        ]
+    };
+
+    let paragraph = Paragraph::new(stats_text)
+        .block(Block::default().borders(Borders::ALL).title("Proxy Statistics"))
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
+fn render_upf_stats(f: &mut Frame, app: &App, area: Rect) {
+    let upf_text = if let Some(ref stats) = app.proxy_stats {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("UPF BACKEND DISTRIBUTION", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(""),
+        ];
+
+        if stats.upf_stats.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  No UPF backends connected", Style::default().fg(Color::Yellow)),
+            ]));
+        } else {
+            for upf in &stats.upf_stats {
+                // Extract health status color
+                let health_color = if upf.health.contains("Healthy") {
+                    Color::Green
+                } else if upf.health.contains("Degraded") {
+                    Color::Yellow
+                } else if upf.health.contains("Unhealthy") {
+                    Color::Red
+                } else {
+                    Color::Gray
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled("●", Style::default().fg(health_color)),
+                    Span::raw(" "),
+                    Span::styled(&upf.address, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                ]));
+
+                lines.push(Line::from(vec![
+                    Span::raw("    Messages Sent:    "),
+                    Span::styled(format!("{}", upf.messages_sent), Style::default().fg(Color::Cyan)),
+                ]));
+
+                lines.push(Line::from(vec![
+                    Span::raw("    Active Sessions:  "),
+                    Span::styled(format!("{}", upf.active_sessions), Style::default().fg(Color::Yellow)),
+                ]));
+
+                lines.push(Line::from(vec![
+                    Span::raw("    Health:           "),
+                    Span::styled(&upf.health, Style::default().fg(health_color)),
+                ]));
+
+                lines.push(Line::from(""));
+            }
+        }
+
+        lines
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("No UPF statistics available", Style::default().fg(Color::Yellow)),
+            ]),
+        ]
+    };
+
+    let paragraph = Paragraph::new(upf_text)
+        .block(Block::default().borders(Borders::ALL).title("UPF Backends"))
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
 }
 
 fn render_logs(f: &mut Frame, app: &mut App, area: Rect) {
@@ -662,6 +952,93 @@ fn render_tests(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(list, area);
 }
 
+fn render_upfs(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Input area
+            Constraint::Min(0),     // UPF list
+            Constraint::Length(6),  // Instructions
+        ])
+        .split(area);
+
+    // Input area
+    let input_text = if app.upf_input_mode {
+        format!("Add UPF: {} █", app.upf_input)
+    } else {
+        "Press 'a' to add UPF, ↑/↓ to select, 'd' to delete selected UPF".to_string()
+    };
+
+    let input = Paragraph::new(input_text)
+        .block(Block::default().borders(Borders::ALL).title("UPF Management"))
+        .style(if app.upf_input_mode {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        });
+
+    f.render_widget(input, chunks[0]);
+
+    // UPF list
+    let upf_items: Vec<ListItem> = app.upf_list.iter().enumerate().map(|(idx, upf)| {
+        let is_selected = idx == app.selected_upf;
+        let status = if let Some(ref stats) = app.proxy_stats {
+            stats.upf_stats.iter()
+                .find(|s| s.address == *upf)
+                .map(|s| s.health.clone())
+                .unwrap_or_else(|| "Unknown".to_string())
+        } else {
+            "Unknown".to_string()
+        };
+
+        let health_color = if status.contains("Healthy") {
+            Color::Green
+        } else if status.contains("Degraded") {
+            Color::Yellow
+        } else if status.contains("Unhealthy") {
+            Color::Red
+        } else {
+            Color::Gray
+        };
+
+        let line = Line::from(vec![
+            Span::styled(
+                if is_selected { "► " } else { "  " },
+                Style::default().fg(Color::Yellow)
+            ),
+            Span::styled("● ", Style::default().fg(health_color)),
+            Span::styled(format!("{:<25}", upf), Style::default().fg(Color::White)),
+            Span::styled(format!(" [{}]", status), Style::default().fg(health_color)),
+        ]);
+
+        ListItem::new(line)
+    }).collect();
+
+    let upf_list = List::new(upf_items)
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            "Configured UPF Backends ({}/64)",
+            app.upf_list.len()
+        )));
+
+    f.render_widget(upf_list, chunks[1]);
+
+    // Instructions
+    let instructions = vec![
+        Line::from(vec![
+            Span::styled("Controls:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from("  a           - Add new UPF (enter address:port, e.g., 127.0.0.1:8809)"),
+        Line::from("  d           - Delete selected UPF"),
+        Line::from("  ↑/↓         - Navigate UPF list"),
+        Line::from("  ESC         - Cancel input"),
+    ];
+
+    let help = Paragraph::new(instructions)
+        .block(Block::default().borders(Borders::ALL).title("Help"));
+
+    f.render_widget(help, chunks[2]);
+}
+
 fn render_help(f: &mut Frame, _app: &mut App, area: Rect) {
     let help_text = vec![
         Line::from(vec![
@@ -695,6 +1072,14 @@ fn render_help(f: &mut Frame, _app: &mut App, area: Rect) {
         ]),
         Line::from("  ↑/↓         - Select test"),
         Line::from("  Enter       - Run selected test"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("UPF Management Tab:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from("  a           - Add new UPF"),
+        Line::from("  d           - Delete selected UPF"),
+        Line::from("  ↑/↓         - Navigate UPF list"),
+        Line::from("  ESC         - Cancel input"),
         Line::from(""),
         Line::from(vec![
             Span::styled("Configuration:", Style::default().fg(Color::Gray)),
@@ -822,6 +1207,82 @@ fn handle_events(app: &mut App) -> io::Result<()> {
                         _ => {}
                     }
                 }
+                Tab::UPFs => {
+                    if app.upf_input_mode {
+                        // Handle input mode
+                        match key.code {
+                            KeyCode::Char(c) => {
+                                app.upf_input.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                app.upf_input.pop();
+                            }
+                            KeyCode::Enter => {
+                                // Try to add the UPF
+                                if !app.upf_input.is_empty() {
+                                    if app.upf_list.len() >= 64 {
+                                        app.set_message("Maximum 64 UPFs reached".to_string());
+                                    } else if app.upf_list.contains(&app.upf_input) {
+                                        app.set_message(format!("UPF {} already exists", app.upf_input));
+                                    } else {
+                                        app.upf_list.push(app.upf_input.clone());
+                                        app.send_upf_command("add", &app.upf_input)?;
+                                        app.sync_services_with_upf_list();
+                                        app.set_message(format!("Added UPF: {}", app.upf_input));
+                                        app.upf_input.clear();
+                                        app.upf_input_mode = false;
+                                    }
+                                }
+                            }
+                            KeyCode::Esc => {
+                                app.upf_input.clear();
+                                app.upf_input_mode = false;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        // Normal mode
+                        match key.code {
+                            KeyCode::Char('q') => app.should_quit = true,
+                            KeyCode::Tab => {
+                                let current_idx = Tab::all().iter().position(|t| t == &app.current_tab).unwrap();
+                                app.current_tab = Tab::all()[(current_idx + 1) % Tab::all().len()];
+                            }
+                            KeyCode::Char('a') => {
+                                app.upf_input_mode = true;
+                                app.upf_input.clear();
+                            }
+                            KeyCode::Char('d') => {
+                                if !app.upf_list.is_empty() && app.selected_upf < app.upf_list.len() {
+                                    let removed = app.upf_list.remove(app.selected_upf);
+
+                                    // Stop the corresponding service if it's running
+                                    if let Some(service_idx) = app.services.iter().position(|s| s.addr == removed) {
+                                        if app.services[service_idx].status == ServiceStatus::Running {
+                                            let _ = app.stop_service(service_idx);
+                                        }
+                                    }
+
+                                    app.send_upf_command("remove", &removed)?;
+                                    app.sync_services_with_upf_list();
+                                    app.set_message(format!("Removed UPF: {}", removed));
+                                    if app.selected_upf >= app.upf_list.len() && app.selected_upf > 0 {
+                                        app.selected_upf -= 1;
+                                    }
+                                }
+                            }
+                            KeyCode::Up => {
+                                app.selected_upf = app.selected_upf.saturating_sub(1);
+                            }
+                            KeyCode::Down => {
+                                if !app.upf_list.is_empty() {
+                                    app.selected_upf = (app.selected_upf + 1).min(app.upf_list.len() - 1);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
     }
@@ -838,6 +1299,7 @@ fn main() -> io::Result<()> {
 
     // Create app
     let mut app = App::new()?;
+    app.sync_services_with_upf_list(); // Initialize services based on UPF list
     app.set_message("Welcome! Press 's' to start services, 'h' for help, 'q' to quit".to_string());
 
     // Main loop
@@ -848,6 +1310,7 @@ fn main() -> io::Result<()> {
         // Update service status periodically
         if last_update.elapsed() > Duration::from_secs(1) {
             app.update_service_status();
+            app.load_proxy_stats();
             // Periodically update logs (simplified)
             if last_update.elapsed() > Duration::from_secs(2) {
                 let _ = app.update_logs();
