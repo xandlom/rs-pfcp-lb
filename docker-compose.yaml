@@ -42,7 +42,7 @@ services:
       dockerfile: Dockerfile
     container_name: upf1
     user: pfcp
-    entrypoint: ["test-upf"]
+    entrypoint: ["/usr/local/bin/test-upf"]
     command:
       - --listen
       - "0.0.0.0:8805"
@@ -60,7 +60,7 @@ services:
       dockerfile: Dockerfile
     container_name: upf2
     user: pfcp
-    entrypoint: ["test-upf"]
+    entrypoint: ["/usr/local/bin/test-upf"]
     command:
       - --listen
       - "0.0.0.0:8805"
@@ -78,7 +78,7 @@ services:
       dockerfile: Dockerfile
     container_name: upf3
     user: pfcp
-    entrypoint: ["test-upf"]
+    entrypoint: ["/usr/local/bin/test-upf"]
     command:
       - --listen
       - "0.0.0.0:8805"
@@ -96,7 +96,7 @@ services:
       dockerfile: Dockerfile
     container_name: test-smf
     user: pfcp
-    entrypoint: ["test-smf"]
+    entrypoint: ["/usr/local/bin/test-smf"]
     command:
       - --target
       - "pfcp-proxy:8805"
