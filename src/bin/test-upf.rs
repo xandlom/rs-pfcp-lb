@@ -4,9 +4,15 @@
 
 use clap::Parser;
 use rs_pfcp::message;
-use std::net::SocketAddr;
+use rs_pfcp::message::association_setup_response::AssociationSetupResponseBuilder;
+use rs_pfcp::message::heartbeat_response::HeartbeatResponseBuilder;
+use rs_pfcp::message::session_deletion_response::SessionDeletionResponseBuilder;
+use rs_pfcp::message::session_establishment_response::SessionEstablishmentResponseBuilder;
+use rs_pfcp::message::Message;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::net::UdpSocket;
 
 #[derive(Parser, Debug)]
@@ -51,12 +57,17 @@ async fn handle_message(
     socket: Arc<UdpSocket>,
     upf_name: String,
     stats: Arc<UpfStats>,
+    local_ip: Ipv4Addr,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Parse message to get type and sequence
-    let msg = message::parse(&data)?;
-    let msg_type = msg.msg_type();
-    let sequence = msg.sequence();
-    let seid = msg.seid();
+    // Parse message to get type and sequence, then drop it to avoid Send issues
+    let (msg_type, sequence, seid) = {
+        let msg = message::parse(&data)?;
+        let msg_type = msg.msg_type();
+        let sequence = msg.sequence();
+        let seid = msg.seid();
+        (msg_type, sequence, seid)
+        // msg is dropped here
+    };
 
     stats.total_messages.fetch_add(1, Ordering::Relaxed);
 
@@ -65,26 +76,91 @@ async fn handle_message(
         upf_name, msg_type, src, sequence, seid
     );
 
-    // Track message types
-    match msg_type {
+    // Build and send appropriate response
+    let response_data: Option<Vec<u8>> = match msg_type {
         message::MsgType::HeartbeatRequest => {
             stats.heartbeats.fetch_add(1, Ordering::Relaxed);
+
+            let response = HeartbeatResponseBuilder::new(sequence)
+                .recovery_time_stamp(SystemTime::now())
+                .build();
+
+            println!("[{}]    📤 Sending HeartbeatResponse", upf_name);
+            Some(response.marshal())
         }
-        message::MsgType::SessionEstablishmentRequest
-        | message::MsgType::SessionModificationRequest
-        | message::MsgType::SessionDeletionRequest => {
+
+        message::MsgType::AssociationSetupRequest => {
+            let response = AssociationSetupResponseBuilder::new(sequence)
+                .cause_accepted()
+                .node_id(local_ip)
+                .recovery_time_stamp(SystemTime::now())
+                .build();
+
+            println!("[{}]    📤 Sending AssociationSetupResponse (accepted)", upf_name);
+            Some(response.marshal())
+        }
+
+        message::MsgType::SessionEstablishmentRequest => {
+            stats.sessions.fetch_add(1, Ordering::Relaxed);
+            if let Some(s) = seid {
+                println!("[{}]    ✓ Session SEID: {:#x}", upf_name, s);
+
+                match SessionEstablishmentResponseBuilder::accepted(s, sequence)
+                    .fseid(s, local_ip)
+                    .build()
+                {
+                    Ok(response) => {
+                        println!("[{}]    📤 Sending SessionEstablishmentResponse (accepted)", upf_name);
+                        Some(response.marshal())
+                    }
+                    Err(e) => {
+                        println!("[{}]    ❌ Failed to build SessionEstablishmentResponse: {}", upf_name, e);
+                        None
+                    }
+                }
+            } else {
+                println!("[{}]    ⚠️  SessionEstablishmentRequest missing SEID", upf_name);
+                None
+            }
+        }
+
+        message::MsgType::SessionDeletionRequest => {
+            stats.sessions.fetch_add(1, Ordering::Relaxed);
+            if let Some(s) = seid {
+                println!("[{}]    ✓ Deleting Session SEID: {:#x}", upf_name, s);
+
+                let response = SessionDeletionResponseBuilder::new(s, sequence)
+                    .cause_accepted()
+                    .build();
+
+                println!("[{}]    📤 Sending SessionDeletionResponse (accepted)", upf_name);
+                Some(response.marshal())
+            } else {
+                println!("[{}]    ⚠️  SessionDeletionRequest missing SEID", upf_name);
+                None
+            }
+        }
+
+        message::MsgType::SessionModificationRequest => {
             stats.sessions.fetch_add(1, Ordering::Relaxed);
             if let Some(s) = seid {
                 println!("[{}]    ✓ Session SEID: {:#x}", upf_name, s);
             }
+            println!("[{}]    ⚠️  SessionModificationResponse not implemented yet", upf_name);
+            None
         }
-        _ => {}
-    }
 
-    // For testing, we'll just echo back a simple response
-    // In a real implementation, we would build proper PFCP responses
-    // For now, just acknowledge receipt
-    println!("[{}]    ✓ Processed message", upf_name);
+        _ => {
+            println!("[{}]    ⚠️  No response handler for {:?}", upf_name, msg_type);
+            None
+        }
+    };
+
+    // Send response if we built one
+    if let Some(response) = response_data {
+        socket.send_to(&response, src).await?;
+        println!("[{}]    ✓ Response sent", upf_name);
+    }
 
     Ok(())
 }
@@ -115,6 +191,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Extract local IP for responses (use first octet-based IP or fallback)
+    let local_ip = match local_addr.ip() {
+        std::net::IpAddr::V4(ipv4) => ipv4,
+        std::net::IpAddr::V6(_) => Ipv4Addr::new(127, 0, 0, 1), // Fallback for IPv6
+    };
+
     // Main message loop
     let mut buf = vec![0u8; 65536];
     loop {
@@ -126,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stats_clone = stats.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_message(data, src, socket_clone, upf_name, stats_clone).await {
+            if let Err(e) = handle_message(data, src, socket_clone, upf_name, stats_clone, local_ip).await {
                 eprintln!("Error handling message: {}", e);
             }
         });
