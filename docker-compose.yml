@@ -103,7 +103,7 @@ services:
       context: ./docker/rs-pfcp-examples
       dockerfile: Dockerfile
     container_name: smf-client
-    command: ["session-client", "--address", "pfcp-proxy", "--port", "8805", "--sessions", "10"]
+    command: ["session-client", "--interface", "eth0", "--address", "pfcp-proxy", "--port", "8805", "--sessions", "10"]
     networks:
       pfcp-net:
         ipv4_address: 172.20.0.20
