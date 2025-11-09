@@ -13,33 +13,33 @@ The easiest way to run the complete setup is using Docker Compose, which include
 
 ```bash
 # Build and start the proxy and UPF backends
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f pfcp-proxy
-docker-compose logs -f upf1 upf2 upf3
+docker compose logs -f pfcp-proxy
+docker compose logs -f upf1 upf2 upf3
 
 # Check status
-docker-compose ps
+docker compose ps
 ```
 
 ### Run tests
 
 ```bash
 # Run heartbeat test
-docker-compose run --rm test-smf --target pfcp-proxy:8805 heartbeat --count 5
+docker compose run --rm test-smf --target pfcp-proxy:8805 heartbeat --count 5
 
 # Run session establishment test
-docker-compose run --rm test-smf --target pfcp-proxy:8805 sessions --count 10
+docker compose run --rm test-smf --target pfcp-proxy:8805 sessions --count 10
 
 # Run full test scenario
-docker-compose run --rm test-smf --target pfcp-proxy:8805 full --sessions 20
+docker compose run --rm test-smf --target pfcp-proxy:8805 full --sessions 20
 ```
 
 ### Stop the stack
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ## Architecture
@@ -117,7 +117,7 @@ To add more UPF backends:
 
 3. Restart the stack:
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Running Individual Containers
@@ -174,7 +174,7 @@ command:
 The proxy includes built-in health checks. Monitor using:
 
 ```bash
-docker-compose exec pfcp-proxy pfcp-proxy --help
+docker compose exec pfcp-proxy pfcp-proxy --help
 ```
 
 ### 3. Persistent Logging
@@ -230,17 +230,17 @@ networks:
 The proxy logs statistics every 10 seconds (configurable):
 
 ```bash
-docker-compose logs -f pfcp-proxy | grep "Statistics"
+docker compose logs -f pfcp-proxy | grep "Statistics"
 ```
 
 ### Check UPF Backend Health
 
 ```bash
 # View UPF logs
-docker-compose logs upf1 upf2 upf3
+docker compose logs upf1 upf2 upf3
 
 # Check message counts
-docker-compose exec upf1 pgrep test-upf
+docker compose exec upf1 pgrep test-upf
 ```
 
 ## Troubleshooting
@@ -249,7 +249,7 @@ docker-compose exec upf1 pgrep test-upf
 
 Check if backends are specified:
 ```bash
-docker-compose logs pfcp-proxy
+docker compose logs pfcp-proxy
 ```
 
 Expected error if backends missing:
@@ -262,12 +262,12 @@ Example: --backends 10.0.1.10:8805,10.0.1.11:8805
 
 Verify UPF containers are running:
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 Check network connectivity:
 ```bash
-docker-compose exec pfcp-proxy ping upf1
+docker compose exec pfcp-proxy ping upf1
 ```
 
 ### High latency
@@ -303,13 +303,13 @@ Run a load test to verify distribution:
 
 ```bash
 # Establish 100 sessions
-docker-compose run --rm test-smf \
+docker compose run --rm test-smf \
   --target pfcp-proxy:8805 \
   sessions --count 100 --delete
 
 # View distribution in logs
-docker-compose logs pfcp-proxy | grep "Session established"
-docker-compose logs upf1 upf2 upf3 | grep "Session SEID"
+docker compose logs pfcp-proxy | grep "Session established"
+docker compose logs upf1 upf2 upf3 | grep "Session SEID"
 ```
 
 ## Upgrading
@@ -319,20 +319,20 @@ docker-compose logs upf1 upf2 upf3 | grep "Session SEID"
 git pull
 
 # Rebuild and restart
-docker-compose down
-docker-compose build --no-cache
-docker-compose up -d
+docker compose down
+docker compose build --no-cache
+docker compose up -d
 ```
 
 ## Cleanup
 
 ```bash
 # Stop and remove containers
-docker-compose down
+docker compose down
 
 # Remove images
-docker-compose down --rmi all
+docker compose down --rmi all
 
 # Remove volumes
-docker-compose down -v
+docker compose down -v
 ```
