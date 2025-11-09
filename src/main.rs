@@ -20,11 +20,10 @@
 
 use clap::Parser;
 use rs_pfcp::message::{self, MsgType};
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -35,7 +34,6 @@ mod routing;
 mod session;
 mod statistics;
 
-use config::Config;
 use health::{HealthMonitor, HealthStatus};
 use routing::{LoadBalancingStrategy, RoutingDecision};
 use session::{PendingRequests, SessionTable};
@@ -469,7 +467,7 @@ async fn handle_response(
     stats: Arc<Statistics>,
 ) {
     match pending_requests.lookup_and_increment(sequence).await {
-        Some((origin_addr, is_broadcast, response_count, from_upf)) => {
+        Some((origin_addr, is_broadcast, response_count, _from_upf)) => {
             if let Err(e) = socket.send_to(&data, origin_addr).await {
                 error!("Failed to forward response to {}: {}", origin_addr, e);
             } else {
