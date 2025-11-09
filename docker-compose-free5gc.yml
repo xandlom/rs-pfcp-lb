@@ -5,9 +5,8 @@
 # free5GC SMF → PFCP Proxy (8805) → UPF Pool (upf1, upf2, upf3)
 #
 # Usage:
-#   docker-compose -f docker-compose-free5gc.yml up -d
+#   docker compose -f docker-compose-free5gc.yml up -d
 
-version: '3.8'
 
 services:
   # =============================================================================

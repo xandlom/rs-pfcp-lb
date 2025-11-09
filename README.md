@@ -51,7 +51,7 @@ PFCP Proxy/Load Balancer for distributing sessions across multiple UPF (User Pla
 Start the proxy with 3 UPF simulators:
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 This starts:
@@ -63,13 +63,13 @@ This starts:
 Run test client:
 
 ```bash
-docker-compose run --rm smf-client
+docker compose run --rm smf-client
 ```
 
 View proxy logs:
 
 ```bash
-docker-compose logs -f pfcp-proxy
+docker compose logs -f pfcp-proxy
 ```
 
 #### free5GC Integration
@@ -77,7 +77,7 @@ docker-compose logs -f pfcp-proxy
 For production deployment with free5GC:
 
 ```bash
-docker-compose -f docker-compose-free5gc.yml up -d
+docker compose -f docker-compose-free5gc.yml up -d
 ```
 
 This deploys:
@@ -336,17 +336,17 @@ pfcp-proxy \
 
 1. **Start the infrastructure**:
    ```bash
-   docker-compose -f docker-compose-free5gc.yml up -d
+   docker compose -f docker-compose-free5gc.yml up -d
    ```
 
 2. **Verify all services are healthy**:
    ```bash
-   docker-compose -f docker-compose-free5gc.yml ps
+   docker compose -f docker-compose-free5gc.yml ps
    ```
 
 3. **Check proxy logs**:
    ```bash
-   docker-compose -f docker-compose-free5gc.yml logs -f pfcp-proxy
+   docker compose -f docker-compose-free5gc.yml logs -f pfcp-proxy
    ```
 
 4. **Register subscribers** (if using Web UI):
@@ -373,13 +373,13 @@ Start test infrastructure and run client:
 
 ```bash
 # Terminal 1: Start infrastructure
-docker-compose up -d
+docker compose up -d
 
 # Terminal 2: Run test client
-docker-compose run --rm smf-client
+docker compose run --rm smf-client
 
 # Terminal 3: Monitor proxy
-docker-compose logs -f pfcp-proxy
+docker compose logs -f pfcp-proxy
 ```
 
 ### Load Testing
@@ -387,7 +387,7 @@ docker-compose logs -f pfcp-proxy
 Generate high load:
 
 ```bash
-docker-compose run --rm smf-client \
+docker compose run --rm smf-client \
     session-client \
     --address pfcp-proxy \
     --port 8805 \

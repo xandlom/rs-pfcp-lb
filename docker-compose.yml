@@ -3,8 +3,11 @@
 # - PFCP Proxy/LB (listening on port 8805)
 # - 3 UPF simulators (based on rs-pfcp examples)
 # - Test SMF client
-
-version: '3.8'
+#
+# Usage:
+#   docker compose up -d
+#   docker compose run --rm smf-client
+#   docker compose logs -f pfcp-proxy
 
 services:
   # PFCP Proxy/Load Balancer
@@ -38,83 +41,69 @@ services:
       - upf3
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "pidof", "pfcp-proxy"]
+      test: ["CMD", "pgrep", "-x", "pfcp-proxy"]
       interval: 10s
       timeout: 3s
       retries: 3
 
   # UPF Backend 1
   upf1:
-    image: ghcr.io/xandlom/rs-pfcp:latest
+    build:
+      context: ./docker/rs-pfcp-examples
+      dockerfile: Dockerfile
     container_name: upf1
-    command:
-      - "session-server"
-      - "--interface"
-      - "eth0"
-      - "--port"
-      - "8805"
+    command: ["session-server", "--interface", "eth0", "--port", "8805"]
     networks:
       pfcp-net:
         ipv4_address: 172.20.0.11
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "pidof", "session-server"]
+      test: ["CMD", "pgrep", "-x", "session-server"]
       interval: 10s
       timeout: 3s
       retries: 3
 
   # UPF Backend 2
   upf2:
-    image: ghcr.io/xandlom/rs-pfcp:latest
+    build:
+      context: ./docker/rs-pfcp-examples
+      dockerfile: Dockerfile
     container_name: upf2
-    command:
-      - "session-server"
-      - "--interface"
-      - "eth0"
-      - "--port"
-      - "8805"
+    command: ["session-server", "--interface", "eth0", "--port", "8805"]
     networks:
       pfcp-net:
         ipv4_address: 172.20.0.12
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "pidof", "session-server"]
+      test: ["CMD", "pgrep", "-x", "session-server"]
       interval: 10s
       timeout: 3s
       retries: 3
 
   # UPF Backend 3
   upf3:
-    image: ghcr.io/xandlom/rs-pfcp:latest
+    build:
+      context: ./docker/rs-pfcp-examples
+      dockerfile: Dockerfile
     container_name: upf3
-    command:
-      - "session-server"
-      - "--interface"
-      - "eth0"
-      - "--port"
-      - "8805"
+    command: ["session-server", "--interface", "eth0", "--port", "8805"]
     networks:
       pfcp-net:
         ipv4_address: 172.20.0.13
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "pidof", "session-server"]
+      test: ["CMD", "pgrep", "-x", "session-server"]
       interval: 10s
       timeout: 3s
       retries: 3
 
   # Test SMF Client (manual start)
   smf-client:
-    image: ghcr.io/xandlom/rs-pfcp:latest
+    build:
+      context: ./docker/rs-pfcp-examples
+      dockerfile: Dockerfile
     container_name: smf-client
-    command:
-      - "session-client"
-      - "--address"
-      - "pfcp-proxy"
-      - "--port"
-      - "8805"
-      - "--sessions"
-      - "10"
+    command: ["session-client", "--address", "pfcp-proxy", "--port", "8805", "--sessions", "10"]
     networks:
       pfcp-net:
         ipv4_address: 172.20.0.20
