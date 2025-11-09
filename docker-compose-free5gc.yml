@@ -1,0 +1,292 @@
+# Docker Compose for free5GC with PFCP Proxy/Load Balancer
+# This setup integrates the PFCP proxy with free5GC SMF and multiple UPF instances
+#
+# Architecture:
+# free5GC SMF → PFCP Proxy (8805) → UPF Pool (upf1, upf2, upf3)
+#
+# Usage:
+#   docker compose -f docker-compose-free5gc.yml up -d
+
+
+services:
+  # =============================================================================
+  # Core Network Functions
+  # =============================================================================
+
+  # MongoDB for free5GC
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    command: mongod --port 27017
+    environment:
+      MONGO_INITDB_DATABASE: free5gc
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.2
+    restart: unless-stopped
+
+  # NRF (Network Repository Function)
+  nrf:
+    image: free5gc/nrf:v3.4.1
+    container_name: nrf
+    command: ./nrf -c ./config/nrfcfg.yaml
+    volumes:
+      - ./config/free5gc/nrfcfg.yaml:/free5gc/config/nrfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.10
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+
+  # AMF (Access and Mobility Management Function)
+  amf:
+    image: free5gc/amf:v3.4.1
+    container_name: amf
+    command: ./amf -c ./config/amfcfg.yaml
+    volumes:
+      - ./config/free5gc/amfcfg.yaml:/free5gc/config/amfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.11
+    depends_on:
+      - nrf
+    restart: unless-stopped
+
+  # SMF (Session Management Function)
+  # Configured to use PFCP Proxy instead of direct UPF connection
+  smf:
+    image: free5gc/smf:v3.4.1
+    container_name: smf
+    command: ./smf -c ./config/smfcfg.yaml
+    volumes:
+      - ./config/free5gc/smfcfg.yaml:/free5gc/config/smfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.12
+    depends_on:
+      - nrf
+      - pfcp-proxy
+    restart: unless-stopped
+
+  # AUSF (Authentication Server Function)
+  ausf:
+    image: free5gc/ausf:v3.4.1
+    container_name: ausf
+    command: ./ausf -c ./config/ausfcfg.yaml
+    volumes:
+      - ./config/free5gc/ausfcfg.yaml:/free5gc/config/ausfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.13
+    depends_on:
+      - nrf
+    restart: unless-stopped
+
+  # NSSF (Network Slice Selection Function)
+  nssf:
+    image: free5gc/nssf:v3.4.1
+    container_name: nssf
+    command: ./nssf -c ./config/nssfcfg.yaml
+    volumes:
+      - ./config/free5gc/nssfcfg.yaml:/free5gc/config/nssfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.14
+    depends_on:
+      - nrf
+    restart: unless-stopped
+
+  # PCF (Policy Control Function)
+  pcf:
+    image: free5gc/pcf:v3.4.1
+    container_name: pcf
+    command: ./pcf -c ./config/pcfcfg.yaml
+    volumes:
+      - ./config/free5gc/pcfcfg.yaml:/free5gc/config/pcfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.15
+    depends_on:
+      - nrf
+    restart: unless-stopped
+
+  # UDM (Unified Data Management)
+  udm:
+    image: free5gc/udm:v3.4.1
+    container_name: udm
+    command: ./udm -c ./config/udmcfg.yaml
+    volumes:
+      - ./config/free5gc/udmcfg.yaml:/free5gc/config/udmcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.16
+    depends_on:
+      - nrf
+    restart: unless-stopped
+
+  # UDR (Unified Data Repository)
+  udr:
+    image: free5gc/udr:v3.4.1
+    container_name: udr
+    command: ./udr -c ./config/udrcfg.yaml
+    volumes:
+      - ./config/free5gc/udrcfg.yaml:/free5gc/config/udrcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.17
+    depends_on:
+      - nrf
+      - mongodb
+    restart: unless-stopped
+
+  # =============================================================================
+  # PFCP Proxy/Load Balancer
+  # =============================================================================
+
+  pfcp-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pfcp-proxy
+    command:
+      - "--listen"
+      - "0.0.0.0:8805"
+      - "--backends"
+      - "upf1:8805,upf2:8805,upf3:8805"
+      - "--strategy"
+      - "least-sessions"  # Use least-sessions for better distribution
+      - "--stats-interval"
+      - "30"
+      - "--health-check-interval"
+      - "5"
+      - "--log-level"
+      - "info"
+    ports:
+      - "8805:8805/udp"  # PFCP port
+      - "9090:9090"      # Metrics port (future)
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.100
+    depends_on:
+      - upf1
+      - upf2
+      - upf3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pidof", "pfcp-proxy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # =============================================================================
+  # User Plane Functions (UPF Pool)
+  # =============================================================================
+
+  # UPF 1 - High-capacity backend
+  upf1:
+    image: free5gc/upf:v3.4.1
+    container_name: upf1
+    command: ./upf -c ./config/upfcfg.yaml
+    volumes:
+      - ./config/free5gc/upf1cfg.yaml:/free5gc/config/upfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.201
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pidof", "upf"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # UPF 2 - High-capacity backend
+  upf2:
+    image: free5gc/upf:v3.4.1
+    container_name: upf2
+    command: ./upf -c ./config/upfcfg.yaml
+    volumes:
+      - ./config/free5gc/upf2cfg.yaml:/free5gc/config/upfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.202
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pidof", "upf"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # UPF 3 - Standard capacity backend
+  upf3:
+    image: free5gc/upf:v3.4.1
+    container_name: upf3
+    command: ./upf -c ./config/upfcfg.yaml
+    volumes:
+      - ./config/free5gc/upf3cfg.yaml:/free5gc/config/upfcfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.203
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pidof", "upf"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # =============================================================================
+  # Web UI (optional)
+  # =============================================================================
+
+  webui:
+    image: free5gc/webui:v3.4.1
+    container_name: webui
+    command: ./webui -c ./config/webuicfg.yaml
+    volumes:
+      - ./config/free5gc/webuicfg.yaml:/free5gc/config/webuicfg.yaml
+    networks:
+      free5gc-net:
+        ipv4_address: 172.21.0.5
+    ports:
+      - "5000:5000"  # Web UI
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+    profiles:
+      - webui  # Only start when explicitly requested
+
+networks:
+  free5gc-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1
+    driver_opts:
+      com.docker.network.bridge.name: br-free5gc
+
+volumes:
+  mongodb_data:
+    driver: local
+  pfcp_logs:
+    driver: local

@@ -1,0 +1,42 @@
+# Simple PFCP Proxy Configuration
+#
+# Minimal configuration for testing and development
+
+[proxy]
+listen_address = "0.0.0.0:8805"
+buffer_size = 65536
+
+[load_balancing]
+strategy = "round-robin"
+session_timeout = 3600
+health_check_interval = 5
+heartbeat_timeout = 2
+
+[[backends]]
+address = "127.0.0.1:8806"
+weight = 1.0
+
+[[backends]]
+address = "127.0.0.1:8807"
+weight = 1.0
+
+[[backends]]
+address = "127.0.0.1:8808"
+weight = 1.0
+
+[health]
+failure_threshold = 3
+recovery_threshold = 5
+degraded_latency_ms = 100
+unhealthy_latency_ms = 500
+
+[metrics]
+enabled = true
+prometheus_port = 9090
+export_interval = 10
+retention_days = 7
+
+[logging]
+level = "info"
+format = "text"
+output = ""
