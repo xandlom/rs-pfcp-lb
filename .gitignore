@@ -24,6 +24,10 @@ target
 # Logs
 *.log
 logs/
+.logs/
+
+# Local runner PIDs
+.pids/
 
 # Configuration (keep examples)
 /config/*.toml

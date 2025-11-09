@@ -113,14 +113,72 @@ This deploys:
 cargo build --release
 ```
 
-#### Run
+#### Run Locally with Loopback Interface
+
+The easiest way to test locally without Docker is using the provided `run-local.sh` script:
 
 ```bash
+# Start all services (proxy + 3 UPF backends on loopback)
+./run-local.sh start
+
+# Run interactive test menu
+./run-local.sh test
+
+# View logs from all services
+./run-local.sh logs
+
+# Check service status
+./run-local.sh status
+
+# Stop all services
+./run-local.sh stop
+```
+
+This script runs everything on `127.0.0.1`:
+- **PFCP Proxy**: `127.0.0.1:8805`
+- **UPF Backend 1**: `127.0.0.1:8806`
+- **UPF Backend 2**: `127.0.0.1:8807`
+- **UPF Backend 3**: `127.0.0.1:8808`
+
+The script provides:
+- ✓ Automatic build if binaries don't exist
+- ✓ Process management with PID files
+- ✓ Log collection in `.logs/` directory
+- ✓ Interactive test scenarios
+- ✓ Service health monitoring
+- ✓ Graceful shutdown handling
+
+All commands available:
+```bash
+./run-local.sh start      # Start all services
+./run-local.sh stop       # Stop all services
+./run-local.sh restart    # Restart all services
+./run-local.sh status     # Show service status
+./run-local.sh test       # Run test scenarios
+./run-local.sh logs       # Tail logs
+./run-local.sh build      # Build project
+./run-local.sh clean      # Clean logs and PIDs
+```
+
+#### Manual Run
+
+You can also run components manually:
+
+```bash
+# Terminal 1: Start UPF backends
+./target/release/test-upf --listen 127.0.0.1:8806 --name upf1 &
+./target/release/test-upf --listen 127.0.0.1:8807 --name upf2 &
+./target/release/test-upf --listen 127.0.0.1:8808 --name upf3 &
+
+# Terminal 2: Start proxy
 ./target/release/pfcp-proxy \
-    --listen 0.0.0.0:8805 \
-    --backends 10.0.1.10:8805,10.0.1.11:8805,10.0.1.12:8805 \
+    --listen 127.0.0.1:8805 \
+    --backends 127.0.0.1:8806,127.0.0.1:8807,127.0.0.1:8808 \
     --strategy round-robin \
     --stats-interval 10
+
+# Terminal 3: Run tests
+./target/release/test-smf --target 127.0.0.1:8805 sessions --count 10
 ```
 
 ## Command-Line Options
