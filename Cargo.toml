@@ -1,0 +1,58 @@
+[package]
+name = "rs-pfcp-lb"
+version = "0.1.0"
+edition = "2021"
+authors = ["PFCP Proxy Team"]
+description = "PFCP Proxy/Load Balancer for distributing sessions across multiple UPF backends"
+license = "Apache-2.0"
+repository = "https://github.com/xandlom/rs-pfcp-lb"
+
+[dependencies]
+# PFCP protocol implementation
+rs-pfcp = { git = "https://github.com/xandlom/rs-pfcp.git", branch = "main" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Metrics (optional - for future Prometheus support)
+# prometheus = { version = "0.13", optional = true }
+
+# Lock-free data structures
+dashmap = "6.1"
+
+# Time utilities
+chrono = "0.4"
+
+[dev-dependencies]
+# Testing utilities
+tokio-test = "0.4"
+
+[features]
+default = []
+# metrics = ["prometheus"]
+
+[[bin]]
+name = "pfcp-proxy"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
