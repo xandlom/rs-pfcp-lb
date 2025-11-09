@@ -113,6 +113,29 @@ services:
       - testing  # Only start when explicitly requested
     restart: "no"
 
+  # Test Scenario Runner (interactive menu)
+  test-runner:
+    build:
+      context: ./docker/rs-pfcp-examples
+      dockerfile: Dockerfile
+    container_name: test-runner
+    stdin_open: true
+    tty: true
+    environment:
+      - PROXY_ADDRESS=pfcp-proxy
+      - PROXY_PORT=8805
+    command: ["/bin/bash", "/scripts/test-scenarios.sh"]
+    volumes:
+      - ./scripts:/scripts:ro
+    networks:
+      pfcp-net:
+        ipv4_address: 172.20.0.21
+    depends_on:
+      - pfcp-proxy
+    profiles:
+      - testing  # Only start when explicitly requested
+    restart: "no"
+
 networks:
   pfcp-net:
     driver: bridge

@@ -63,8 +63,22 @@ This starts:
 Run test client:
 
 ```bash
+# Simple test (10 sessions)
 docker compose run --rm smf-client
+
+# Interactive test scenarios menu
+docker compose run --rm test-runner
 ```
+
+The `test-runner` service provides an interactive menu with various test scenarios:
+- Basic Test (10 sessions)
+- Load Balance Test (30 sessions - perfect 3-way split)
+- Heavy Load (100 sessions)
+- Stress Test (1000 sessions)
+- Continuous Load (until Ctrl+C)
+- Custom scenarios
+
+See **[TESTING.md](TESTING.md)** for detailed testing documentation.
 
 View proxy logs:
 

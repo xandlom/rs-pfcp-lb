@@ -47,6 +47,14 @@ default = []
 name = "pfcp-proxy"
 path = "src/main.rs"
 
+[[bin]]
+name = "test-upf"
+path = "src/bin/test-upf.rs"
+
+[[bin]]
+name = "test-smf"
+path = "src/bin/test-smf.rs"
+
 [profile.release]
 opt-level = 3
 lto = true
