@@ -19,7 +19,7 @@ RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/test-upf.rs && \
     echo "fn main() {}" > src/bin/test-smf.rs && \
     cargo build --release && \
-    rm -rf src
+    rm -rf src target/release/pfcp-proxy* target/release/test-upf* target/release/test-smf*
 
 # Copy actual source code
 COPY src ./src
