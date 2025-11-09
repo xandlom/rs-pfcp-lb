@@ -55,4 +55,6 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD pgrep -x pfcp-proxy || exit 1
 
 ENTRYPOINT ["pfcp-proxy"]
-CMD ["--help"]
+# Users must provide --backends flag
+# Example: docker run pfcp-proxy --listen 0.0.0.0:8805 --backends 10.0.1.10:8805,10.0.1.11:8805
+# Without backends, the proxy will show an error and exit
