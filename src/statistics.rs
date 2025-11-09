@@ -3,7 +3,11 @@
 use crate::{SessionTable, UpfPool};
 use dashmap::DashMap;
 use rs_pfcp::message::MsgType;
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -161,4 +165,91 @@ impl Statistics {
 
         println!("{}", "=".repeat(80));
     }
+
+    /// Export statistics to a JSON file for external consumption (e.g., TUI)
+    pub async fn export_to_json(
+        &self,
+        path: impl AsRef<Path>,
+        session_table: &SessionTable,
+        upf_pool: &UpfPool,
+    ) -> std::io::Result<()> {
+        let snapshot = self.create_snapshot(session_table, upf_pool).await;
+        let json = serde_json::to_string_pretty(&snapshot)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Create a serializable snapshot of current statistics
+    async fn create_snapshot(
+        &self,
+        session_table: &SessionTable,
+        upf_pool: &UpfPool,
+    ) -> StatisticsSnapshot {
+        // Collect message type counts
+        let mut message_types = HashMap::new();
+        for entry in self.msg_type_counts.iter() {
+            message_types.insert(format!("{:?}", entry.key()), *entry.value());
+        }
+
+        // Collect per-UPF statistics
+        let mut upf_stats = Vec::new();
+        for backend in upf_pool.all_backends() {
+            let messages_sent = self
+                .upf_message_counts
+                .get(&backend.addr)
+                .map(|e| *e.value())
+                .unwrap_or(0);
+            let active_sessions = session_table.count_by_upf(backend.addr).await;
+
+            upf_stats.push(UpfStatSnapshot {
+                address: backend.addr.to_string(),
+                messages_sent,
+                active_sessions,
+                health: format!("{:?}", *backend.health.read().await),
+            });
+        }
+
+        StatisticsSnapshot {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            total_messages_received: self.total_messages_received.load(Ordering::Relaxed),
+            total_messages_sent: self.total_messages_sent.load(Ordering::Relaxed),
+            total_responses_forwarded: self.total_responses_forwarded.load(Ordering::Relaxed),
+            responses_dropped: self.responses_dropped.load(Ordering::Relaxed),
+            active_sessions: session_table.count().await,
+            sessions_established: self.sessions_established.load(Ordering::Relaxed),
+            sessions_deleted: self.sessions_deleted.load(Ordering::Relaxed),
+            routed_by_seid: self.routed_by_seid.load(Ordering::Relaxed),
+            routed_by_load_balance: self.routed_by_load_balance.load(Ordering::Relaxed),
+            broadcasts: self.broadcasts.load(Ordering::Relaxed),
+            message_types,
+            upf_stats,
+        }
+    }
+}
+
+/// Serializable snapshot of statistics
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StatisticsSnapshot {
+    pub timestamp: String,
+    pub total_messages_received: u64,
+    pub total_messages_sent: u64,
+    pub total_responses_forwarded: u64,
+    pub responses_dropped: u64,
+    pub active_sessions: usize,
+    pub sessions_established: u64,
+    pub sessions_deleted: u64,
+    pub routed_by_seid: u64,
+    pub routed_by_load_balance: u64,
+    pub broadcasts: u64,
+    pub message_types: HashMap<String, u64>,
+    pub upf_stats: Vec<UpfStatSnapshot>,
+}
+
+/// Per-UPF statistics snapshot
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpfStatSnapshot {
+    pub address: String,
+    pub messages_sent: u64,
+    pub active_sessions: usize,
+    pub health: String,
 }

@@ -11,8 +11,9 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap},
     Frame, Terminal,
 };
+use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{self, BufRead, BufReader},
     path::PathBuf,
@@ -26,6 +27,33 @@ const UPF1_ADDR: &str = "127.0.0.1:8806";
 const UPF2_ADDR: &str = "127.0.0.1:8807";
 const UPF3_ADDR: &str = "127.0.0.1:8808";
 const MAX_LOG_LINES: usize = 1000;
+const STATS_FILE_PATH: &str = "/tmp/pfcp-proxy-stats.json";
+
+// Proxy statistics structures (mirroring the ones in statistics.rs)
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct ProxyStats {
+    pub timestamp: String,
+    pub total_messages_received: u64,
+    pub total_messages_sent: u64,
+    pub total_responses_forwarded: u64,
+    pub responses_dropped: u64,
+    pub active_sessions: usize,
+    pub sessions_established: u64,
+    pub sessions_deleted: u64,
+    pub routed_by_seid: u64,
+    pub routed_by_load_balance: u64,
+    pub broadcasts: u64,
+    pub message_types: HashMap<String, u64>,
+    pub upf_stats: Vec<UpfStats>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct UpfStats {
+    pub address: String,
+    pub messages_sent: u64,
+    pub active_sessions: usize,
+    pub health: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -112,6 +140,7 @@ struct App {
     should_quit: bool,
     selected_test: usize,
     auto_scroll_logs: bool,
+    proxy_stats: Option<ProxyStats>,
 }
 
 impl App {
@@ -162,7 +191,17 @@ impl App {
             should_quit: false,
             selected_test: 0,
             auto_scroll_logs: true,
+            proxy_stats: None,
         })
+    }
+
+    /// Load proxy statistics from JSON file
+    fn load_proxy_stats(&mut self) {
+        if let Ok(data) = fs::read_to_string(STATS_FILE_PATH) {
+            if let Ok(stats) = serde_json::from_str::<ProxyStats>(&data) {
+                self.proxy_stats = Some(stats);
+            }
+        }
     }
 
     fn update_service_status(&mut self) {
@@ -565,8 +604,8 @@ fn render_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10), // Services
-            Constraint::Min(0),     // Recent logs
+            Constraint::Length(8),  // Services
+            Constraint::Min(0),     // Stats area
         ])
         .split(area);
 
@@ -608,15 +647,195 @@ fn render_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(services, chunks[0]);
 
-    // Recent logs
-    let log_lines: Vec<ListItem> = app.logs.iter().rev().take(20).rev().map(|line| {
-        ListItem::new(Line::from(line.clone()))
-    }).collect();
+    // Stats area - split into left (proxy stats) and right (UPF stats)
+    let stats_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),  // Proxy stats
+            Constraint::Percentage(50),  // UPF stats
+        ])
+        .split(chunks[1]);
 
-    let logs = List::new(log_lines)
-        .block(Block::default().borders(Borders::ALL).title("Recent Logs"));
+    // Render proxy statistics
+    render_proxy_stats(f, app, stats_chunks[0]);
 
-    f.render_widget(logs, chunks[1]);
+    // Render UPF distribution
+    render_upf_stats(f, app, stats_chunks[1]);
+}
+
+fn render_proxy_stats(f: &mut Frame, app: &App, area: Rect) {
+    let stats_text = if let Some(ref stats) = app.proxy_stats {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("Last Updated: ", Style::default().fg(Color::Gray)),
+                Span::styled(&stats.timestamp[11..19], Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("GLOBAL METRICS", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Messages Received:   "),
+                Span::styled(format!("{}", stats.total_messages_received), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Messages Sent:       "),
+                Span::styled(format!("{}", stats.total_messages_sent), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Responses Forwarded: "),
+                Span::styled(format!("{}", stats.total_responses_forwarded), Style::default().fg(Color::Cyan)),
+            ]),
+        ];
+
+        if stats.responses_dropped > 0 {
+            lines.push(Line::from(vec![
+                Span::raw("  Responses Dropped:   "),
+                Span::styled(format!("{}", stats.responses_dropped), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            ]));
+        }
+
+        lines.extend(vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("SESSIONS", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Active Sessions:     "),
+                Span::styled(format!("{}", stats.active_sessions), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Established:         "),
+                Span::styled(format!("{}", stats.sessions_established), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Deleted:             "),
+                Span::styled(format!("{}", stats.sessions_deleted), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("ROUTING DECISIONS", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Routed by SEID:      "),
+                Span::styled(format!("{}", stats.routed_by_seid), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Load Balanced:       "),
+                Span::styled(format!("{}", stats.routed_by_load_balance), Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::raw("  Broadcasts:          "),
+                Span::styled(format!("{}", stats.broadcasts), Style::default().fg(Color::Cyan)),
+            ]),
+        ]);
+
+        // Add top message types if available
+        if !stats.message_types.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("TOP MESSAGE TYPES", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+
+            let mut msg_types: Vec<_> = stats.message_types.iter().collect();
+            msg_types.sort_by(|a, b| b.1.cmp(a.1));
+
+            for (msg_type, count) in msg_types.iter().take(5) {
+                let short_name = msg_type.replace("Request", "Req").replace("Response", "Rsp");
+                lines.push(Line::from(vec![
+                    Span::raw(format!("  {:<25}", if short_name.len() > 25 { &short_name[..25] } else { &short_name })),
+                    Span::styled(format!("{:>6}", count), Style::default().fg(Color::Cyan)),
+                ]));
+            }
+        }
+
+        lines
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("No proxy statistics available", Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Start the proxy service to see realtime stats", Style::default().fg(Color::Gray)),
+            ]),
+        ]
+    };
+
+    let paragraph = Paragraph::new(stats_text)
+        .block(Block::default().borders(Borders::ALL).title("Proxy Statistics"))
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
+fn render_upf_stats(f: &mut Frame, app: &App, area: Rect) {
+    let upf_text = if let Some(ref stats) = app.proxy_stats {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("UPF BACKEND DISTRIBUTION", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(""),
+        ];
+
+        if stats.upf_stats.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  No UPF backends connected", Style::default().fg(Color::Yellow)),
+            ]));
+        } else {
+            for upf in &stats.upf_stats {
+                // Extract health status color
+                let health_color = if upf.health.contains("Healthy") {
+                    Color::Green
+                } else if upf.health.contains("Degraded") {
+                    Color::Yellow
+                } else if upf.health.contains("Unhealthy") {
+                    Color::Red
+                } else {
+                    Color::Gray
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled("●", Style::default().fg(health_color)),
+                    Span::raw(" "),
+                    Span::styled(&upf.address, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                ]));
+
+                lines.push(Line::from(vec![
+                    Span::raw("    Messages Sent:    "),
+                    Span::styled(format!("{}", upf.messages_sent), Style::default().fg(Color::Cyan)),
+                ]));
+
+                lines.push(Line::from(vec![
+                    Span::raw("    Active Sessions:  "),
+                    Span::styled(format!("{}", upf.active_sessions), Style::default().fg(Color::Yellow)),
+                ]));
+
+                lines.push(Line::from(vec![
+                    Span::raw("    Health:           "),
+                    Span::styled(&upf.health, Style::default().fg(health_color)),
+                ]));
+
+                lines.push(Line::from(""));
+            }
+        }
+
+        lines
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("No UPF statistics available", Style::default().fg(Color::Yellow)),
+            ]),
+        ]
+    };
+
+    let paragraph = Paragraph::new(upf_text)
+        .block(Block::default().borders(Borders::ALL).title("UPF Backends"))
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
 }
 
 fn render_logs(f: &mut Frame, app: &mut App, area: Rect) {
@@ -848,6 +1067,7 @@ fn main() -> io::Result<()> {
         // Update service status periodically
         if last_update.elapsed() > Duration::from_secs(1) {
             app.update_service_status();
+            app.load_proxy_stats();
             // Periodically update logs (simplified)
             if last_update.elapsed() > Duration::from_secs(2) {
                 let _ = app.update_logs();

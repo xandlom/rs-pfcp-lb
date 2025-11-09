@@ -641,6 +641,11 @@ async fn run_proxy(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 ticker.tick().await;
                 stats.print_report(&session_table, &upf_pool).await;
+
+                // Export stats to JSON for TUI consumption
+                if let Err(e) = stats.export_to_json("/tmp/pfcp-proxy-stats.json", &session_table, &upf_pool).await {
+                    warn!("Failed to export statistics to JSON: {}", e);
+                }
             }
         });
     }
