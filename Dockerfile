@@ -1,5 +1,6 @@
 # Multi-stage build for PFCP Proxy/Load Balancer
-FROM rust:1.82-slim-bookworm AS builder
+# Using Rust 1.90 to match rs-pfcp dependency requirements
+FROM rust:1.90-slim-bookworm AS builder
 
 WORKDIR /build
 
@@ -32,6 +33,7 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from builder
@@ -48,7 +50,7 @@ EXPOSE 8805/udp
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD pidof pfcp-proxy || exit 1
+    CMD pgrep -x pfcp-proxy || exit 1
 
 ENTRYPOINT ["pfcp-proxy"]
 CMD ["--help"]

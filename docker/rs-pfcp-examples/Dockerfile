@@ -1,6 +1,7 @@
 # Multi-stage build for rs-pfcp example applications
 # Builds session-server, session-client, heartbeat-server, heartbeat-client
-FROM rust:1.82-slim-bookworm AS builder
+# Using Rust 1.90 to match rs-pfcp requirements
+FROM rust:1.90-slim-bookworm AS builder
 
 WORKDIR /build
 
@@ -25,6 +26,7 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy example binaries from builder
