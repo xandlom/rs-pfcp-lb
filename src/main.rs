@@ -567,14 +567,42 @@ async fn handle_smf_request(
 // =============================================================================
 
 async fn run_proxy(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    // Parse backend addresses
-    let backends: Result<Vec<SocketAddr>, _> = args.backends.iter().map(|s| s.parse()).collect();
-    let backends = backends?;
+    // Parse and resolve backend addresses (supports both IP addresses and hostnames)
+    let mut backends = Vec::new();
+    for backend_str in &args.backends {
+        // Try to parse as SocketAddr first (for IP addresses)
+        match backend_str.parse::<SocketAddr>() {
+            Ok(addr) => {
+                backends.push(addr);
+            }
+            Err(_) => {
+                // If parsing fails, try DNS resolution (for hostnames like "upf1:8805")
+                match tokio::net::lookup_host(backend_str).await {
+                    Ok(mut addrs) => {
+                        if let Some(addr) = addrs.next() {
+                            info!("Resolved {} to {}", backend_str, addr);
+                            backends.push(addr);
+                        } else {
+                            error!("Failed to resolve hostname: {}", backend_str);
+                            eprintln!("Failed to resolve hostname: {}", backend_str);
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to resolve {}: {}", backend_str, e);
+                        eprintln!("Failed to resolve {}: {}", backend_str, e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+    }
 
     if backends.is_empty() {
         error!("No backend UPF addresses specified");
         eprintln!("Use --backends flag to specify UPF addresses");
         eprintln!("Example: --backends 10.0.1.10:8805,10.0.1.11:8805");
+        eprintln!("         --backends upf1:8805,upf2:8805,upf3:8805");
         std::process::exit(1);
     }
 
