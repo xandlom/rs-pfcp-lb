@@ -35,6 +35,10 @@ dashmap = "6.1"
 # Time utilities
 chrono = "0.4"
 
+# TUI dependencies
+ratatui = "0.29"
+crossterm = "0.28"
+
 [dev-dependencies]
 # Testing utilities
 tokio-test = "0.4"
@@ -54,6 +58,10 @@ path = "src/bin/test-upf.rs"
 [[bin]]
 name = "test-smf"
 path = "src/bin/test-smf.rs"
+
+[[bin]]
+name = "tui-runner"
+path = "src/bin/tui-runner.rs"
 
 [profile.release]
 opt-level = 3
