@@ -152,7 +152,8 @@ impl Statistics {
         );
         println!("{}", "-".repeat(56));
 
-        for backend in upf_pool.all_backends() {
+        let backends = upf_pool.all_backends().await;
+        for backend in backends {
             let msg_count = self
                 .upf_message_counts
                 .get(&backend.addr)
@@ -193,7 +194,8 @@ impl Statistics {
 
         // Collect per-UPF statistics
         let mut upf_stats = Vec::new();
-        for backend in upf_pool.all_backends() {
+        let backends = upf_pool.all_backends().await;
+        for backend in backends {
             let messages_sent = self
                 .upf_message_counts
                 .get(&backend.addr)

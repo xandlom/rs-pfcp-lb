@@ -84,10 +84,12 @@ struct Args {
 // =============================================================================
 
 /// UPF backend pool with configurable load balancing
+/// Supports dynamic addition/removal of backends at runtime (up to 64 UPFs)
 struct UpfPool {
-    backends: Vec<UpfBackend>,
+    backends: Arc<RwLock<Vec<UpfBackend>>>,
     next_index: AtomicUsize,
     strategy: LoadBalancingStrategy,
+    max_backends: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -109,10 +111,60 @@ impl UpfPool {
             .collect();
 
         Self {
-            backends,
+            backends: Arc::new(RwLock::new(backends)),
             next_index: AtomicUsize::new(0),
             strategy,
+            max_backends: 64,
         }
+    }
+
+    /// Add a new UPF backend at runtime
+    pub async fn add_backend(&self, addr: SocketAddr) -> Result<(), String> {
+        let mut backends = self.backends.write().await;
+
+        // Check if we've reached the maximum
+        if backends.len() >= self.max_backends {
+            return Err(format!("Maximum number of backends ({}) reached", self.max_backends));
+        }
+
+        // Check if backend already exists
+        if backends.iter().any(|b| b.addr == addr) {
+            return Err(format!("Backend {} already exists", addr));
+        }
+
+        backends.push(UpfBackend {
+            addr,
+            health: Arc::new(RwLock::new(HealthStatus::Unknown)),
+            weight: 1,
+        });
+
+        info!("Added UPF backend: {}", addr);
+        Ok(())
+    }
+
+    /// Remove a UPF backend at runtime
+    pub async fn remove_backend(&self, addr: SocketAddr) -> Result<(), String> {
+        let mut backends = self.backends.write().await;
+
+        let original_len = backends.len();
+        backends.retain(|b| b.addr != addr);
+
+        if backends.len() == original_len {
+            return Err(format!("Backend {} not found", addr));
+        }
+
+        info!("Removed UPF backend: {}", addr);
+        Ok(())
+    }
+
+    /// Get count of current backends
+    pub async fn backend_count(&self) -> usize {
+        self.backends.read().await.len()
+    }
+
+    /// Get list of all backend addresses
+    pub async fn list_backends(&self) -> Vec<SocketAddr> {
+        self.backends.read().await.iter().map(|b| b.addr).collect()
     }
 
     /// Select next UPF based on configured strategy
@@ -184,8 +236,9 @@ impl UpfPool {
     }
 
     async fn healthy_backends(&self) -> Vec<UpfBackend> {
+        let backends = self.backends.read().await;
         let mut result = Vec::new();
-        for backend in &self.backends {
+        for backend in backends.iter() {
             let health = backend.health.read().await;
             if matches!(*health, HealthStatus::Healthy | HealthStatus::Unknown) {
                 result.push(backend.clone());
@@ -194,12 +247,13 @@ impl UpfPool {
         result
     }
 
-    fn all_backends(&self) -> &[UpfBackend] {
-        &self.backends
+    async fn all_backends(&self) -> Vec<UpfBackend> {
+        self.backends.read().await.clone()
     }
 
     async fn update_health(&self, addr: SocketAddr, status: HealthStatus) {
-        for backend in &self.backends {
+        let backends = self.backends.read().await;
+        for backend in backends.iter() {
             if backend.addr == addr {
                 *backend.health.write().await = status;
                 break;
@@ -253,6 +307,7 @@ async fn route_message(
             stats.record_routing_decision(false, true);
             let backends: Vec<_> = upf_pool
                 .all_backends()
+                .await
                 .iter()
                 .map(|b| b.addr)
                 .collect();
@@ -266,6 +321,7 @@ async fn route_message(
             stats.record_routing_decision(false, true);
             let backends: Vec<_> = upf_pool
                 .all_backends()
+                .await
                 .iter()
                 .map(|b| b.addr)
                 .collect();
@@ -471,19 +527,21 @@ async fn handle_response(
             if let Err(e) = socket.send_to(&data, origin_addr).await {
                 error!("Failed to forward response to {}: {}", origin_addr, e);
             } else {
+                let backend_count = if is_broadcast {
+                    upf_pool.all_backends().await.len()
+                } else {
+                    1
+                };
+
                 debug!(
                     "Forwarded response to {} (response {}/{})",
                     origin_addr,
                     response_count,
-                    if is_broadcast {
-                        upf_pool.all_backends().len()
-                    } else {
-                        1
-                    }
+                    backend_count
                 );
                 stats.record_response_forwarded();
 
-                if !is_broadcast || response_count >= upf_pool.all_backends().len() {
+                if !is_broadcast || response_count >= backend_count {
                     pending_requests.remove(sequence).await;
                 }
             }
@@ -672,6 +730,65 @@ async fn run_proxy(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::spawn(async move {
             HealthMonitor::run(upf_pool, socket, Duration::from_secs(interval)).await;
+        });
+    }
+
+    // Spawn control file monitor for dynamic UPF management
+    {
+        let upf_pool = upf_pool.clone();
+        tokio::spawn(async move {
+            use tokio::fs;
+            use tokio::io::AsyncReadExt;
+            use std::path::Path;
+
+            let control_file = Path::new(".upf_control");
+            let mut last_size = 0u64;
+
+            let mut ticker = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                ticker.tick().await;
+
+                // Check if control file exists and has grown
+                if let Ok(metadata) = fs::metadata(control_file).await {
+                    let current_size = metadata.len();
+                    if current_size > last_size {
+                        // Read new content
+                        if let Ok(mut file) = fs::File::open(control_file).await {
+                            let mut contents = String::new();
+                            if file.read_to_string(&mut contents).await.is_ok() {
+                                // Process commands
+                                for line in contents.lines().skip((last_size as usize) / 20) { // Approximate line skip
+                                    if let Some((action, addr)) = line.split_once(':') {
+                                        match addr.parse::<SocketAddr>() {
+                                            Ok(socket_addr) => {
+                                                match action {
+                                                    "add" => {
+                                                        if let Err(e) = upf_pool.add_backend(socket_addr).await {
+                                                            warn!("Failed to add UPF {}: {}", socket_addr, e);
+                                                        } else {
+                                                            info!("Dynamically added UPF backend: {}", socket_addr);
+                                                        }
+                                                    }
+                                                    "remove" => {
+                                                        if let Err(e) = upf_pool.remove_backend(socket_addr).await {
+                                                            warn!("Failed to remove UPF {}: {}", socket_addr, e);
+                                                        } else {
+                                                            info!("Dynamically removed UPF backend: {}", socket_addr);
+                                                        }
+                                                    }
+                                                    _ => warn!("Unknown UPF command: {}", action),
+                                                }
+                                            }
+                                            Err(e) => warn!("Invalid socket address in control file '{}': {}", addr, e),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        last_size = current_size;
+                    }
+                }
+            }
         });
     }
 
