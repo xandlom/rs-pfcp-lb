@@ -3,15 +3,16 @@
 //! A test SMF simulator that sends various PFCP messages to test proxy functionality.
 
 use clap::{Parser, Subcommand};
-use rs_pfcp::ie::{NodeId, RecoveryTimeStamp};
-use rs_pfcp::message::{
-    AssociationSetupRequest, HeartbeatRequest, Message, SessionDeletionRequest,
-    SessionEstablishmentRequest,
-};
-use std::net::SocketAddr;
+use rs_pfcp::ie::{Ie, IeType};
+use rs_pfcp::message::association_setup_request::AssociationSetupRequestBuilder;
+use rs_pfcp::message::heartbeat_request::HeartbeatRequestBuilder;
+use rs_pfcp::message::session_deletion_request::SessionDeletionRequestBuilder;
+use rs_pfcp::message::session_establishment_request::SessionEstablishmentRequestBuilder;
+use rs_pfcp::message::Message;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 use tokio::net::UdpSocket;
 
 #[derive(Parser, Debug)]
@@ -100,12 +101,11 @@ impl TestContext {
 
     async fn send_heartbeat(&self) -> Result<(), Box<dyn std::error::Error>> {
         let seq = self.next_sequence();
-        let request = HeartbeatRequest::builder()
-            .sequence(seq)
-            .recovery_time_stamp(RecoveryTimeStamp::new(get_recovery_timestamp())?)
-            .build()?;
+        let request = HeartbeatRequestBuilder::new(seq)
+            .recovery_time_stamp(SystemTime::now())
+            .build();
 
-        let data = request.marshal()?;
+        let data = request.marshal();
         self.socket.send_to(&data, self.target).await?;
 
         println!("📤 Sent HeartbeatRequest (seq: {})", seq);
@@ -114,13 +114,12 @@ impl TestContext {
 
     async fn send_association_setup(&self) -> Result<(), Box<dyn std::error::Error>> {
         let seq = self.next_sequence();
-        let request = AssociationSetupRequest::builder()
-            .sequence(seq)
-            .node_id(NodeId::new_ipv4([127, 0, 0, 1])?)
-            .recovery_time_stamp(RecoveryTimeStamp::new(get_recovery_timestamp())?)
-            .build()?;
+        let request = AssociationSetupRequestBuilder::new(seq)
+            .node_id(Ipv4Addr::new(127, 0, 0, 1))
+            .recovery_time_stamp(SystemTime::now())
+            .build();
 
-        let data = request.marshal()?;
+        let data = request.marshal();
         self.socket.send_to(&data, self.target).await?;
 
         println!("📤 Sent AssociationSetupRequest (seq: {})", seq);
@@ -129,13 +128,20 @@ impl TestContext {
 
     async fn establish_session(&self, seid: u64) -> Result<(), Box<dyn std::error::Error>> {
         let seq = self.next_sequence();
-        let request = SessionEstablishmentRequest::builder()
-            .sequence(seq)
-            .seid(seid)
-            .node_id(NodeId::new_ipv4([127, 0, 0, 1])?)
+
+        // Create minimal dummy PDR and FAR IEs for testing
+        // These are not fully valid but sufficient for testing proxy load balancing
+        let create_pdr = Ie::new(IeType::CreatePdr, vec![0x01, 0x00, 0x01]); // Minimal PDR
+        let create_far = Ie::new(IeType::CreateFar, vec![0x01, 0x00, 0x01]); // Minimal FAR
+
+        let request = SessionEstablishmentRequestBuilder::new(seid, seq)
+            .node_id(Ipv4Addr::new(127, 0, 0, 1))
+            .fseid(seid, Ipv4Addr::new(127, 0, 0, 1))
+            .create_pdrs(vec![create_pdr])
+            .create_fars(vec![create_far])
             .build()?;
 
-        let data = request.marshal()?;
+        let data = request.marshal();
         self.socket.send_to(&data, self.target).await?;
 
         println!("📤 Sent SessionEstablishmentRequest (SEID: {:#x}, seq: {})", seid, seq);
@@ -144,12 +150,10 @@ impl TestContext {
 
     async fn delete_session(&self, seid: u64) -> Result<(), Box<dyn std::error::Error>> {
         let seq = self.next_sequence();
-        let request = SessionDeletionRequest::builder()
-            .sequence(seq)
-            .seid(seid)
-            .build()?;
+        let request = SessionDeletionRequestBuilder::new(seid, seq)
+            .build();
 
-        let data = request.marshal()?;
+        let data = request.marshal();
         self.socket.send_to(&data, self.target).await?;
 
         println!("📤 Sent SessionDeletionRequest (SEID: {:#x}, seq: {})", seid, seq);
@@ -183,12 +187,6 @@ impl TestContext {
     }
 }
 
-fn get_recovery_timestamp() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as u32
-}
 
 async fn run_heartbeat_test(
     ctx: &TestContext,
