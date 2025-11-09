@@ -219,6 +219,42 @@ impl App {
         }
     }
 
+    /// Synchronize services list with UPF list
+    fn sync_services_with_upf_list(&mut self) {
+        // Keep the proxy service
+        let proxy_service = ServiceInfo {
+            name: "pfcp-proxy".to_string(),
+            status: self.services.first()
+                .map(|s| s.status)
+                .unwrap_or(ServiceStatus::Stopped),
+            pid: self.services.first()
+                .and_then(|s| s.pid),
+            addr: PROXY_ADDR.to_string(),
+        };
+
+        // Create UPF services from upf_list
+        let mut new_services = vec![proxy_service];
+
+        for (idx, upf_addr) in self.upf_list.iter().enumerate() {
+            let service_name = format!("upf{}", idx + 1);
+
+            // Try to preserve existing service status if it exists
+            let existing_service = self.services.iter()
+                .find(|s| s.addr == *upf_addr);
+
+            new_services.push(ServiceInfo {
+                name: service_name,
+                status: existing_service
+                    .map(|s| s.status)
+                    .unwrap_or(ServiceStatus::Stopped),
+                pid: existing_service.and_then(|s| s.pid),
+                addr: upf_addr.clone(),
+            });
+        }
+
+        self.services = new_services;
+    }
+
     fn update_service_status(&mut self) {
         for service in &mut self.services {
             let pid_file = self.pid_dir.join(format!("{}.pid", service.name));
@@ -1191,6 +1227,7 @@ fn handle_events(app: &mut App) -> io::Result<()> {
                                     } else {
                                         app.upf_list.push(app.upf_input.clone());
                                         app.send_upf_command("add", &app.upf_input)?;
+                                        app.sync_services_with_upf_list();
                                         app.set_message(format!("Added UPF: {}", app.upf_input));
                                         app.upf_input.clear();
                                         app.upf_input_mode = false;
@@ -1218,7 +1255,16 @@ fn handle_events(app: &mut App) -> io::Result<()> {
                             KeyCode::Char('d') => {
                                 if !app.upf_list.is_empty() && app.selected_upf < app.upf_list.len() {
                                     let removed = app.upf_list.remove(app.selected_upf);
+
+                                    // Stop the corresponding service if it's running
+                                    if let Some(service_idx) = app.services.iter().position(|s| s.addr == removed) {
+                                        if app.services[service_idx].status == ServiceStatus::Running {
+                                            let _ = app.stop_service(service_idx);
+                                        }
+                                    }
+
                                     app.send_upf_command("remove", &removed)?;
+                                    app.sync_services_with_upf_list();
                                     app.set_message(format!("Removed UPF: {}", removed));
                                     if app.selected_upf >= app.upf_list.len() && app.selected_upf > 0 {
                                         app.selected_upf -= 1;
@@ -1253,6 +1299,7 @@ fn main() -> io::Result<()> {
 
     // Create app
     let mut app = App::new()?;
+    app.sync_services_with_upf_list(); // Initialize services based on UPF list
     app.set_message("Welcome! Press 's' to start services, 'h' for help, 'q' to quit".to_string());
 
     // Main loop
