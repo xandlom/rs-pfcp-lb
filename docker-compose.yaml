@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  # PFCP Proxy/Load Balancer
+  pfcp-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pfcp-proxy
+    command:
+      - --listen
+      - "0.0.0.0:8805"
+      - --backends
+      - "upf1:8805,upf2:8805,upf3:8805"
+      - --strategy
+      - "round-robin"
+      - --log-level
+      - "info"
+      - --stats-interval
+      - "10"
+    ports:
+      - "8805:8805/udp"
+    networks:
+      - pfcp-network
+    depends_on:
+      - upf1
+      - upf2
+      - upf3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "pfcp-proxy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # UPF Backend 1
+  upf1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: upf1
+    user: pfcp
+    entrypoint: ["test-upf"]
+    command:
+      - --listen
+      - "0.0.0.0:8805"
+      - --name
+      - "upf1"
+    networks:
+      pfcp-network:
+        ipv4_address: 172.20.0.11
+    restart: unless-stopped
+
+  # UPF Backend 2
+  upf2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: upf2
+    user: pfcp
+    entrypoint: ["test-upf"]
+    command:
+      - --listen
+      - "0.0.0.0:8805"
+      - --name
+      - "upf2"
+    networks:
+      pfcp-network:
+        ipv4_address: 172.20.0.12
+    restart: unless-stopped
+
+  # UPF Backend 3
+  upf3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: upf3
+    user: pfcp
+    entrypoint: ["test-upf"]
+    command:
+      - --listen
+      - "0.0.0.0:8805"
+      - --name
+      - "upf3"
+    networks:
+      pfcp-network:
+        ipv4_address: 172.20.0.13
+    restart: unless-stopped
+
+  # Test SMF Client (optional - run manually for testing)
+  test-smf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: test-smf
+    user: pfcp
+    entrypoint: ["test-smf"]
+    command:
+      - --target
+      - "pfcp-proxy:8805"
+      - heartbeat
+      - --count
+      - "5"
+      - --interval
+      - "2"
+    networks:
+      - pfcp-network
+    depends_on:
+      - pfcp-proxy
+    profiles:
+      - testing
+    restart: "no"
+
+networks:
+  pfcp-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

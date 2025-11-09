@@ -1,4 +1,4 @@
-# Multi-stage build for PFCP Proxy/Load Balancer
+# Multi-stage build for PFCP Proxy/Load Balancer and Test Utilities
 # Using Rust 1.90 to match rs-pfcp dependency requirements
 FROM rust:1.90-slim-bookworm AS builder
 
@@ -38,8 +38,10 @@ RUN apt-get update && apt-get install -y \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary from builder
+# Copy all binaries from builder
 COPY --from=builder /build/target/release/pfcp-proxy /usr/local/bin/
+COPY --from=builder /build/target/release/test-upf /usr/local/bin/
+COPY --from=builder /build/target/release/test-smf /usr/local/bin/
 
 # Create non-root user
 RUN useradd -m -u 1000 pfcp && \
